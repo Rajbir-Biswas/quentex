@@ -1,0 +1,185 @@
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import hashlib
+import osfrom flask import Flask, request, jsonify
+import sqlite3
+import os
+from pqcrypto.kem import ml_kem_512
+
+app = Flask(__name__)
+
+DATABASE = "instance/locker.db"
+
+# Ensure instance folder exists
+os.makedirs("instance", exist_ok=True)
+
+
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Users table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            public_key BLOB,
+            api_key TEXT UNIQUE
+        )
+    """)
+
+    # Messages table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            ciphertext BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# 🔐 API Key Protection
+def require_api_key(func):
+    def wrapper(*args, **kwargs):
+        api_key = request.headers.get("X-API-KEY")
+        if not api_key:
+            return jsonify({"error": "API key required"}), 401
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE api_key = ?", (api_key,))
+        user = cursor.fetchone()
+        conn.close()
+
+        if not user:
+            return jsonify({"error": "Invalid API key"}), 403
+
+        return func(*args, **kwargs)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+
+# 🔐 Register User
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.get_json()
+    username = data.get("username")
+
+    if not username:
+        return jsonify({"error": "Username required"}), 400
+
+    public_key, secret_key = ml_kem_512.generate_keypair()
+    api_key = secrets.token_hex(32)
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO users (username, public_key, api_key)
+            VALUES (?, ?, ?)
+        """, (username, public_key, api_key))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Username already exists"}), 400
+
+    conn.close()
+
+    return jsonify({
+        "message": "User registered successfully",
+        "api_key": api_key
+    })
+
+def derive_aes_key(shared_secret):
+    # Derive 256-bit AES key from shared secret
+    return hashlib.sha256(shared_secret).digest()
+
+
+def aes_encrypt(key, plaintext):
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)  # 96-bit nonce for GCM
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+    return nonce, ciphertext
+
+
+# 🔐 Encrypt Message
+@app.route("/encrypt", methods=["POST"])
+@require_api_key
+def encrypt_message():
+    data = request.get_json()
+    username = data.get("username")
+    message = data.get("message")
+
+    if not username or not message:
+        return jsonify({"error": "Username and message required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Get user's public key
+    cursor.execute("SELECT public_key FROM users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    public_key = user["public_key"]
+
+    # Step 1: ML-KEM encapsulation
+    pq_ciphertext, shared_secret = ml_kem_512.encrypt(public_key)
+
+    # Step 2: Derive AES key
+    aes_key = derive_aes_key(shared_secret)
+
+    # Step 3: Encrypt actual message
+    nonce, encrypted_message = aes_encrypt(aes_key, message)
+
+    # Step 4: Store encrypted data
+    cursor.execute("""
+        INSERT INTO messages (username, ciphertext)
+        VALUES (?, ?)
+    """, (username, encrypted_message))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "message": "Hybrid encryption successful",
+        "pq_ciphertext_length": len(pq_ciphertext),
+        "encrypted_message_length": len(encrypted_message)
+    })
+
+
+# 🔐 Retrieve Identity
+@app.route("/identity/<username>", methods=["GET"])
+@require_api_key
+def get_identity(username):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT public_key FROM users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    return jsonify({
+        "username": username,
+        "public_key_length": len(user["public_key"])
+    })
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True)
