@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-import oqs
 import base64
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
@@ -108,9 +107,9 @@ def register():
     if existing_user:
         return jsonify({"error": "User already exists"}), 400
 
-    kem = oqs.KeyEncapsulation("Kyber512")
-    public_key = kem.generate_keypair()
-    private_key = kem.export_secret_key()
+    #kem = oqs.KeyEncapsulation("Kyber512")
+    #public_key = kem.generate_keypair()
+    #private_key = kem.export_secret_key()
 
     new_user = User(
         username=username,
@@ -159,8 +158,8 @@ def encrypt():
     if not user:
         return jsonify({"error": "Recipient not found"}), 404
 
-    kem = oqs.KeyEncapsulation("Kyber512")
-    ciphertext_kem, shared_secret = kem.encap_secret(user.public_key)
+    #kem = oqs.KeyEncapsulation("Kyber512")
+    #ciphertext_kem, shared_secret = kem.encap_secret(user.public_key)
 
     aes_key = shared_secret[:32]
     aesgcm = AESGCM(aes_key)
@@ -171,7 +170,7 @@ def encrypt():
     return jsonify({
         "ciphertext": base64.b64encode(ciphertext).decode(),
         "nonce": base64.b64encode(nonce).decode(),
-        "kem_ciphertext": base64.b64encode(ciphertext_kem).decode()
+     #   "kem_ciphertext": base64.b64encode(ciphertext_kem).decode()
     })
 
 
@@ -185,16 +184,16 @@ def decrypt():
     username = data.get("username")
     ciphertext = base64.b64decode(data.get("ciphertext"))
     nonce = base64.b64decode(data.get("nonce"))
-    kem_ciphertext = base64.b64decode(data.get("kem_ciphertext"))
+    #kem_ciphertext = base64.b64decode(data.get("kem_ciphertext"))
 
     user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     # Initialize KEM with stored private key
-    kem = oqs.KeyEncapsulation("Kyber512", secret_key=user.private_key)
+    #kem = oqs.KeyEncapsulation("Kyber512", secret_key=user.private_key)
 
-    shared_secret = kem.decap_secret(kem_ciphertext)
+    #shared_secret = kem.decap_secret(kem_ciphertext)
 
     aes_key = shared_secret[:32]
     aesgcm = AESGCM(aes_key)
