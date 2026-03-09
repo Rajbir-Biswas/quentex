@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Inbox</title>
+</head>
+
+<body>
+
+<h1>{{user}} Inbox</h1>
+
+{% for m in messages %}
+
+<p>
+Message from {{m[1]}}
+<a href="/decrypt/{{m[0]}}">Decrypt</a>
+</p>
+
+{% endfor %}
+
+<br>
+
+<a href="/">Back</a>
+
+</body>
+</html>

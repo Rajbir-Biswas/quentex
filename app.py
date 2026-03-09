@@ -1,213 +1,127 @@
-from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, render_template, request, redirect
+import sqlite3
 import base64
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
+from qcrypto import encrypt, decrypt, KyberKEM
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pq_locker.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+DB = "pq_locker.db"
 
-# -----------------------
-# Database Model
-# -----------------------
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    public_key = db.Column(db.LargeBinary, nullable=False)
-    private_key = db.Column(db.LargeBinary, nullable=False)
+# Generate demo keypairs
+alice_kem = KyberKEM()
+alice_keys = alice_kem.generate_keypair()
+
+bob_kem = KyberKEM()
+bob_keys = bob_kem.generate_keypair()
+
+alice_public = alice_keys.public_key
+alice_private = alice_keys.private_key
+
+bob_public = bob_keys.public_key
+bob_private = bob_keys.private_key
+keys = {
+    "alice": (alice_public, alice_private),
+    "bob": (bob_public, bob_private)
+}
 
 
-# -----------------------
-# Home Route
-# -----------------------
-@app.route("/")
-def home():
-    return """
-    <h2>PQ Locker Demo</h2>
+def init_db():
 
-    <h3>Register User</h3>
-    <input id="reg_username" placeholder="Username">
-    <button onclick="register()">Register</button>
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-    <h3>Encrypt Message</h3>
-    <input id="enc_recipient" placeholder="Recipient">
-    <input id="enc_message" placeholder="Message">
-    <button onclick="encrypt()">Encrypt</button>
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT,
+        recipient TEXT,
+        ciphertext TEXT
+    )
+    """)
 
-    <h3>Decrypt Message</h3>
-    <input id="dec_username" placeholder="Username">
-    <textarea id="dec_ciphertext" placeholder="Ciphertext"></textarea>
-    <textarea id="dec_nonce" placeholder="Nonce"></textarea>
-    <textarea id="dec_kem" placeholder="KEM Ciphertext"></textarea>
-    <button onclick="decrypt()">Decrypt</button>
+    conn.commit()
+    conn.close()
 
-    <h3>Output</h3>
-    <pre id="output"></pre>
 
-    <script>
-    async function register() {
-        let username = document.getElementById("reg_username").value;
-        let res = await fetch("/register", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({username})
-        });
-        let data = await res.json();
-        document.getElementById("output").innerText = JSON.stringify(data, null, 2);
-    }
+@app.route("/", methods=["GET", "POST"])
+def index():
 
-    async function encrypt() {
-        let recipient = document.getElementById("enc_recipient").value;
-        let message = document.getElementById("enc_message").value;
+    if request.method == "POST":
 
-        let res = await fetch("/encrypt", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({recipient, message})
-        });
+        sender = request.form["sender"]
+        recipient = request.form["recipient"]
+        message = request.form["message"]
 
-        let data = await res.json();
-        document.getElementById("output").innerText = JSON.stringify(data, null, 2);
-    }
+        public_key = keys[recipient][0]
 
-    async function decrypt() {
-        let username = document.getElementById("dec_username").value;
-        let ciphertext = document.getElementById("dec_ciphertext").value;
-        let nonce = document.getElementById("dec_nonce").value;
-        let kem_ciphertext = document.getElementById("dec_kem").value;
+        ciphertext = encrypt(public_key, message.encode())
 
-        let res = await fetch("/decrypt", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({username, ciphertext, nonce, kem_ciphertext})
-        });
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
 
-        let data = await res.json();
-        document.getElementById("output").innerText = JSON.stringify(data, null, 2);
-    }
-    </script>
-    """
+        c.execute(
+            "INSERT INTO messages (sender, recipient, ciphertext) VALUES (?,?,?)",
+            (sender, recipient, base64.b64encode(ciphertext).decode())
+        )
 
-# -----------------------
-# Register Route
-# -----------------------
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.get_json()
+        conn.commit()
+        conn.close()
 
-    if not data or "username" not in data:
-        return jsonify({"error": "Username required"}), 400
+        return redirect("/")
 
-    username = data["username"]
+    return render_template("index.html")
 
-    existing_user = User.query.filter_by(username=username).first()
-    if existing_user:
-        return jsonify({"error": "User already exists"}), 400
 
-    #kem = oqs.KeyEncapsulation("Kyber512")
-    #public_key = kem.generate_keypair()
-    #private_key = kem.export_secret_key()
+@app.route("/inbox/<user>")
+def inbox(user):
 
-    new_user = User(
-        username=username,
-        public_key=public_key,
-        private_key=private_key
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute(
+        "SELECT id, sender FROM messages WHERE recipient=?",
+        (user,)
     )
 
-    db.session.add(new_user)
-    db.session.commit()
+    messages = c.fetchall()
 
-    return jsonify({"message": "User registered successfully"})
+    conn.close()
 
-
-# -----------------------
-# Get Public Key
-# -----------------------
-@app.route("/get_public_key/<username>", methods=["GET"])
-def get_public_key(username):
-    user = User.query.filter_by(username=username).first()
-
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
-    public_key_b64 = base64.b64encode(user.public_key).decode()
-
-    return jsonify({
-        "username": username,
-        "public_key": public_key_b64
-    })
+    return render_template("inbox.html", user=user, messages=messages)
 
 
-# -----------------------
-# Encrypt Message
-# -----------------------
-@app.route("/encrypt", methods=["POST"])
-def encrypt():
-    data = request.get_json()
+@app.route("/decrypt/<int:msg_id>")
+def decrypt_msg(msg_id):
 
-    recipient = data.get("recipient")
-    message = data.get("message")
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-    if not recipient or not message:
-        return jsonify({"error": "Recipient and message required"}), 400
+    c.execute(
+        "SELECT sender, recipient, ciphertext FROM messages WHERE id=?",
+        (msg_id,)
+    )
 
-    user = User.query.filter_by(username=recipient).first()
-    if not user:
-        return jsonify({"error": "Recipient not found"}), 404
+    data = c.fetchone()
+    conn.close()
 
-    #kem = oqs.KeyEncapsulation("Kyber512")
-    #ciphertext_kem, shared_secret = kem.encap_secret(user.public_key)
+    sender = data[0]
+    recipient = data[1]
 
-    aes_key = shared_secret[:32]
-    aesgcm = AESGCM(aes_key)
+    ciphertext = base64.b64decode(data[2])
 
-    nonce = os.urandom(12)
-    ciphertext = aesgcm.encrypt(nonce, message.encode(), None)
+    private_key = keys[recipient][1]
 
-    return jsonify({
-        "ciphertext": base64.b64encode(ciphertext).decode(),
-        "nonce": base64.b64encode(nonce).decode(),
-     #   "kem_ciphertext": base64.b64encode(ciphertext_kem).decode()
-    })
+    plaintext = decrypt(private_key, ciphertext)
+
+    return render_template(
+        "message.html",
+        sender=sender,
+        plaintext=plaintext.decode()
+    )
 
 
-# -----------------------
-# Decrypt Message
-# -----------------------
-@app.route("/decrypt", methods=["POST"])
-def decrypt():
-    data = request.get_json()
-
-    username = data.get("username")
-    ciphertext = base64.b64decode(data.get("ciphertext"))
-    nonce = base64.b64decode(data.get("nonce"))
-    #kem_ciphertext = base64.b64decode(data.get("kem_ciphertext"))
-
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
-    # Initialize KEM with stored private key
-    #kem = oqs.KeyEncapsulation("Kyber512", secret_key=user.private_key)
-
-    #shared_secret = kem.decap_secret(kem_ciphertext)
-
-    aes_key = shared_secret[:32]
-    aesgcm = AESGCM(aes_key)
-
-    decrypted_message = aesgcm.decrypt(nonce, ciphertext, None)
-
-    return jsonify({
-        "message": decrypted_message.decode()
-    })
-
-# -----------------------
-# Run App
-# -----------------------
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    app.run(debug=True)
+    init_db()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

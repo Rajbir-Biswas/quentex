@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>PQ Locker</title>
+</head>
+
+<body>
+
+<h1>PQ Locker Demo</h1>
+
+<h2>Send Encrypted Message</h2>
+
+<form method="POST">
+
+<label>Sender</label><br>
+<select name="sender">
+<option value="alice">alice</option>
+<option value="bob">bob</option>
+</select>
+
+<br><br>
+
+<label>Recipient</label><br>
+<select name="recipient">
+<option value="alice">alice</option>
+<option value="bob">bob</option>
+</select>
+
+<br><br>
+
+<label>Message</label><br>
+<input type="text" name="message">
+
+<br><br>
+
+<button type="submit">Encrypt & Send</button>
+
+</form>
+
+<hr>
+
+<h2>Inbox</h2>
+
+<a href="/inbox/alice">Alice Inbox</a><br>
+<a href="/inbox/bob">Bob Inbox</a>
+
+</body>
+</html>
